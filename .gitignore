@@ -1,0 +1,6 @@
+.DS_Store
+.build/
+Assets/*.iconset/
+dist/*.dmg
+dist/dmg-stage/
+*.log

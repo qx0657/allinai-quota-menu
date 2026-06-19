@@ -158,8 +158,7 @@ final class AllinClient {
 
     func hasConfiguredCredentials() -> Bool {
         guard let config = try? readConfig(), !config.email.isEmpty else { return false }
-        guard let password = keychain.get(account: config.email), !password.isEmpty else { return false }
-        return true
+        return keychain.contains(account: config.email)
     }
 
     func clearTokenCache() throws {
@@ -363,6 +362,15 @@ final class Keychain {
     }
 
     func get(account: String) -> String? {
+        let activate = {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        if Thread.isMainThread {
+            activate()
+        } else {
+            DispatchQueue.main.sync(execute: activate)
+        }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -374,6 +382,17 @@ final class Keychain {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    func contains(account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     func delete(account: String) throws {

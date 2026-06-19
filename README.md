@@ -13,6 +13,7 @@ The app lives in the macOS menu bar, shows quota state with a circular progress 
 ## Features
 
 - Menu bar progress icon for quota usage.
+- Tooltip with remaining quota percentage and account balance.
 - Login dialog with credentials stored in macOS Keychain.
 - Access/refresh token cache under Application Support.
 - Configurable refresh interval.
@@ -21,6 +22,16 @@ The app lives in the macOS menu bar, shows quota state with a circular progress 
 - Version metadata in the app bundle and menu for future upgrades.
 - DMG packaging script for sharing the app.
 
+## Screenshots
+
+Menu bar tooltip:
+
+![AllinAI remaining quota and balance tooltip](docs/images/tooltip.png)
+
+Quota details menu:
+
+![AllinAI quota details menu](docs/images/menu.png)
+
 ## Project Layout
 
 ```text
@@ -28,6 +39,7 @@ The app lives in the macOS menu bar, shows quota state with a circular progress 
 ├── Sources/AllinAIQuotaMenu.swift  # App source, menu UI, API client, storage helpers
 ├── Assets/logo.png                 # Source icon image
 ├── Assets/AllinAIQuota.icns        # Generated app icon
+├── docs/images/                    # README screenshots
 ├── build.sh                        # Build and install to /Applications
 ├── make_icon.sh                    # Regenerate .icns from logo.png
 ├── package_dmg.sh                  # Build dist/AllinAI-Quota.dmg

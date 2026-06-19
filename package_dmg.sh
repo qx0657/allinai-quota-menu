@@ -2,7 +2,9 @@
 set -euo pipefail
 
 APP_NAME="AllinAI Quota"
-ROOT="/Users/orb/Dev/tools/allinai-quota-menu"
+APP_VERSION="0.1.0"
+APP_BUILD="1"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 DIST="${ROOT}/dist"
 STAGE="${DIST}/dmg-stage"
 APP="${STAGE}/${APP_NAME}.app"
@@ -16,7 +18,7 @@ mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources" "${DIST}"
 "${ROOT}/make_icon.sh"
 cp "${ROOT}/Assets/AllinAIQuota.icns" "${APP}/Contents/Resources/AllinAIQuota.icns"
 
-cat > "${APP}/Contents/Info.plist" <<'PLIST'
+cat > "${APP}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -34,9 +36,9 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>${APP_BUILD}</string>
   <key>LSUIElement</key>
   <true/>
 </dict>

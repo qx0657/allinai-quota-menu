@@ -2,6 +2,10 @@ import AppKit
 import Foundation
 import Security
 
+enum AppInfo {
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+}
+
 struct Config: Codable {
     var email: String
     var refreshIntervalSeconds: Int
@@ -385,6 +389,58 @@ final class Keychain {
     }
 }
 
+enum StartupManager {
+    private static let label = "local.allinai.quota.menu"
+    private static let launchAgentsDir = FileManager.default
+        .homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+    private static let plistURL = launchAgentsDir.appendingPathComponent("\(label).plist")
+
+    static func isEnabled() -> Bool {
+        guard FileManager.default.fileExists(atPath: plistURL.path) else { return false }
+        guard let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let dict = plist as? [String: Any],
+              let args = dict["ProgramArguments"] as? [String],
+              let executable = Bundle.main.executablePath else {
+            return true
+        }
+        return args.first == executable
+    }
+
+    static func setEnabled(_ enabled: Bool) throws {
+        if enabled {
+            try enable()
+        } else {
+            try disable()
+        }
+    }
+
+    private static func enable() throws {
+        guard let executable = Bundle.main.executablePath else {
+            throw NSError(domain: "AllinAI", code: 20, userInfo: [NSLocalizedDescriptionKey: "无法定位当前应用程序。"])
+        }
+
+        try FileManager.default.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [executable],
+            "RunAtLoad": true,
+            "KeepAlive": false,
+            "StandardOutPath": "/tmp/\(label).out.log",
+            "StandardErrorPath": "/tmp/\(label).err.log"
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try data.write(to: plistURL, options: [.atomic])
+    }
+
+    private static func disable() throws {
+        if FileManager.default.fileExists(atPath: plistURL.path) {
+            try FileManager.default.removeItem(at: plistURL)
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
@@ -529,8 +585,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         intervalItem.submenu = intervalMenu
         menu.addItem(intervalItem)
 
+        let startupItem = item("开机自启动", action: #selector(toggleStartup), key: "")
+        startupItem.state = StartupManager.isEnabled() ? .on : .off
+        menu.addItem(startupItem)
+
         menu.addItem(item("打开配置文件夹", action: #selector(openConfigFolder), key: ""))
         menu.addItem(.separator())
+        disabled("版本：v\(AppInfo.version)")
         menu.addItem(item("退出", action: #selector(quit), key: "q"))
     }
 
@@ -701,6 +762,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openConfigFolder() {
         NSWorkspace.shared.open(appSupportDir)
+    }
+
+    @objc private func toggleStartup() {
+        do {
+            try StartupManager.setEnabled(!StartupManager.isEnabled())
+            rebuildMenu()
+        } catch {
+            showAlert(title: "设置开机自启动失败", message: error.localizedDescription)
+        }
     }
 
     @objc private func setInterval(_ sender: NSMenuItem) {

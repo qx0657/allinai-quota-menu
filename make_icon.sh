@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT="/Users/orb/Dev/tools/allinai-quota-menu"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="${ROOT}/Assets/logo.png"
 ICONSET="${ROOT}/Assets/AllinAIQuota.iconset"
 CANVAS="${ROOT}/Assets/logo-1024.png"

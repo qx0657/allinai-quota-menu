@@ -487,7 +487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
         statusItem.menu = menu
-        statusItem.button?.toolTip = "AllinAI quota"
+        statusItem.button?.toolTip = "AllinAI 未加载"
         setIcon(progress: nil, color: .systemGray)
 
         do {
@@ -559,6 +559,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func rebuildMenu() {
+        updateTooltip()
         menu.removeAllItems()
         let hasCredentials = client.hasConfiguredCredentials()
 
@@ -652,6 +653,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             disabled("当前余额：不可用")
         }
         menu.addItem(.separator())
+    }
+
+    private func updateTooltip() {
+        let text: String
+        switch state {
+        case .loaded(let summary):
+            let quota = summary.metric.map {
+                "剩余额度 \(Int(round((1 - $0.ratio) * 100)))%"
+            } ?? "额度不限"
+            let balance = summary.balance.map { "余额 $\(money($0))" } ?? "余额不可用"
+            text = "AllinAI \(quota) | \(balance)"
+        case .empty(_, let balance, _):
+            let balanceText = balance.map { "余额 $\(money($0))" } ?? "余额不可用"
+            text = "AllinAI 无有效订阅 | \(balanceText)"
+        case .failed(let message, _):
+            text = "AllinAI 获取失败 | \(message)"
+        case .loading:
+            text = "AllinAI 正在刷新..."
+        case .idle:
+            text = config.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "AllinAI 请登录"
+                : "AllinAI 未加载"
+        }
+        statusItem.button?.toolTip = text
     }
 
     private func logoutTitle() -> String {

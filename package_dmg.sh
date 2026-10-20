@@ -2,8 +2,8 @@
 set -euo pipefail
 
 APP_NAME="AllinAI Quota"
-APP_VERSION="0.1.0"
-APP_BUILD="1"
+APP_VERSION="0.2.0"
+APP_BUILD="2"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 DIST="${ROOT}/dist"
 STAGE="${DIST}/dmg-stage"

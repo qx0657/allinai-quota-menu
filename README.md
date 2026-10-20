@@ -2,7 +2,7 @@
 
 轻量原生 macOS 菜单栏工具，用于查看 AllinAI 订阅额度、账户余额和到期状态。常驻菜单栏，打开即可判断当前还能使用多少额度。
 
-**当前版本：0.1.0 · 构建号：1 · 平台：macOS**
+**当前版本：0.2.0 · 构建号：2 · 平台：macOS**
 
 适合个人单账号使用。基于 Swift 与 AppKit，保持单文件源码，不依赖第三方运行库或包管理器。
 
@@ -18,6 +18,7 @@ Windows 版本：[qx0657/allinai-quota-tray-windows](https://github.com/qx0657/a
 - **保留最近数据**：网络或部分接口失败时保留成功获取的数值，明确标记旧数据和失败原因。
 - **本地凭据管理**：密码保存在 macOS 钥匙串，令牌保存在当前用户的本地目录；支持重新登录与退出登录。
 - **原生使用体验**：中文菜单、可选开机自启动、亮暗外观适配；运行时不显示 Dock 图标。
+- **GitHub 检查更新**：“关于”中提供手动检查、可选每日自动检查、更新记录与开源地址。
 
 ## 界面预览
 
@@ -102,7 +103,23 @@ open "$PWD/.build/AllinAI Quota.app"
 | 账号与工具 → 菜单栏显示数值 | 默认关闭；订阅模式显示剩余百分比，余额模式直接显示金额并隐藏重复货币图标 |
 | 账号与工具 → 提醒设置 | 管理通知总开关与低余额阈值 |
 | 账号与工具 → 打开配置文件夹 | 在 Finder 中打开本地数据目录 |
+| 关于 AllinAI Quota → 检查更新… | 检查 GitHub 最新正式版；发现新版后可打开对应 Release 下载页面 |
+| 关于 AllinAI Quota → 自动检查更新（每天） | 默认关闭；开启后最多每 24 小时检查一次，发现新版时在菜单中提示 |
+| 关于 AllinAI Quota → 更新记录… | 打开本仓库的 GitHub Releases |
+| 关于 AllinAI Quota → 开源地址（GitHub）… | 打开本项目源代码仓库 |
 | 退出 | 结束应用进程，保留本地登录信息 |
+
+### 检查更新
+
+通过 **关于 AllinAI Quota → 检查更新…** 查询[本项目最新正式版](https://github.com/qx0657/allinai-quota-menu/releases/latest)。请求执行期间显示“正在检查更新…”，避免重复请求；成功后显示上次检查时间。
+
+- 更新源为 GitHub REST API 的 `GET /repos/qx0657/allinai-quota-menu/releases/latest`，公开仓库无需 GitHub 令牌。
+- 按 `主版本.次版本.修订号` 数值比较版本，标签可带 `v` 前缀；忽略草稿与预发布，不会提示安装较旧版本。正式版发布请使用 `v0.2.0` 这样的标签。
+- 手动检查会明确提示有新版、当前无需更新、暂无正式版或检查失败；限流后遵守 GitHub 的重试时间，重启也不会绕过冷却。
+- **自动检查默认关闭**。开启后启动、唤醒或运行中会检查是否已满 24 小时；时间间隔跨重启保留，失败也计入每日请求频率。后台检查不弹窗、不申请通知权限；发现新版后，“关于”显示“有新版本”，子菜单提供“下载 vX.Y.Z…”入口，菜单栏悬停说明也会提示。
+- 更新使用浏览器打开对应 Release，查看说明并下载 `AllinAI-Quota.dmg`，退出旧应用后拖入“应用程序”替换并重新启动。
+
+更新请求与 AllinAI 账号完全独立，不发送邮箱、密码或登录令牌。仅在手动检查或已开启自动检查时连接 GitHub；网络无法访问 GitHub 时，账户额度查询仍可独立运行。
 
 ### 菜单快捷键
 
@@ -147,7 +164,7 @@ open "$PWD/.build/AllinAI Quota.app"
 | `config.json` | 仅保存邮箱 `email` 与刷新间隔 `refreshIntervalSeconds` |
 | `tokens.json` | 当前账号的 access／refresh token 等本地会话信息 |
 | 密码 | macOS 钥匙串，service：`local.allinai.quota.menu` |
-| 显示与提醒偏好 | UserDefaults 域：`local.allinai.quota.menu`，同时保存提醒去重与显式退出状态 |
+| 显示、提醒与更新偏好 | UserDefaults 域：`local.allinai.quota.menu`，同时保存提醒去重、显式退出状态、检查更新时间与限流冷却 |
 | 自启动配置 | `~/Library/LaunchAgents/local.allinai.quota.menu.plist` |
 
 数据目录权限为 `0700`，配置与令牌文件权限为 `0600`。令牌是本机敏感运行数据，不应加入版本库或公开反馈；密码不写入配置文件或令牌文件。
@@ -192,6 +209,7 @@ open "$PWD/.build/AllinAI Quota.app"
 | `AllinClient` actor | 登录、令牌续期、接口请求与错误分类 |
 | `QuotaStore`（MainActor） | 账户快照、刷新调度、取消与会话代次 |
 | `ReminderManager` | 阈值检查、提醒去重与通知投递 |
+| `ReleaseVersion`、`ReleaseClient`、`UpdateChecker` | 正式版比较、独立 GitHub 请求、每日更新检查与限流冷却 |
 | `SummaryContent`、`SummaryView`、`QuotaProgressView`、`ProgressIcon` | 展示内容与原生视图；渲染时不读文件或钥匙串 |
 | `AppDelegate`、`LoginPanelController`、`StartupManager` | 菜单、登录面板与系统集成 |
 
@@ -209,7 +227,7 @@ zsh -n Tests/run_tests.sh
 ./Tests/run_tests.sh
 ```
 
-测试使用隔离的 URLProtocol、临时目录、生成的测试凭据和内存凭据存储，不请求真实服务、不读取真实钥匙串。覆盖消费模式、周期额度、部分失败、认证恢复、并发续期、退出后的迟到响应、限流、提醒、颜色对比度及文件权限。
+测试使用隔离的 URLProtocol、临时目录、生成的测试凭据和内存凭据存储，不请求真实服务、不读取真实钥匙串。覆盖消费模式、周期额度、部分失败、认证恢复、并发续期、退出后的迟到响应、限流、提醒、颜色对比度、文件权限，以及更新版本比较、每日调度、取消与失败处理。
 
 生成亮暗原生信息区与菜单栏状态样例：
 
@@ -243,11 +261,20 @@ hdiutil verify dist/AllinAI-Quota.dmg
 当前值：
 
 ```sh
-APP_VERSION="0.1.0"
-APP_BUILD="1"
+APP_VERSION="0.2.0"
+APP_BUILD="2"
 ```
 
 同时更新 `Sources/AllinAIQuotaMenu.swift` 中 `AppInfo.version` 的备用值和本 README。应用正常运行时从 bundle 的 `CFBundleShortVersionString` 读取版本，并在菜单底部显示 `版本：v<version>`。
+
+### 发布供应用检查的新版
+
+1. 同步升级上述版本信息，运行类型检查和回归测试。
+2. 执行 `./package_dmg.sh`，验证生成的 `dist/AllinAI-Quota.dmg`。
+3. 在[本仓库 Releases](https://github.com/qx0657/allinai-quota-menu/releases) 创建与应用版本一致的标签，例如 `v0.2.0`，填写更新说明并上传 `AllinAI-Quota.dmg`。
+4. 发布为正式 Release，设为最新版本；草稿、预发布和单独创建的 Git tag 不会成为此更新接口的正式更新。
+
+无需另建更新服务器或在客户端配置 GitHub 令牌。新版本只有发布到 GitHub Release 后，其他用户才会检查到。
 
 安装后可核对元数据：
 

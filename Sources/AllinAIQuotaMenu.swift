@@ -8,8 +8,11 @@ import LocalAuthentication
 // MARK: - Models and quota rules
 
 enum AppInfo {
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0"
     static let intervals = [60, 300, 600, 1800]
+    static let repositoryURL = URL(string: "https://github.com/qx0657/allinai-quota-menu")!
+    static let releasesURL = repositoryURL.appendingPathComponent("releases")
+    static let latestReleaseAPI = URL(string: "https://api.github.com/repos/qx0657/allinai-quota-menu/releases/latest")!
 }
 
 struct Config: Codable, Sendable {
@@ -272,6 +275,203 @@ enum Format {
     }
     static func status(_ value: String?) -> String {
         switch value { case "active": return "有效"; case "expired": return "已过期"; default: return "状态待确认" }
+    }
+}
+
+// MARK: - GitHub release updates (independent of the AllinAI account)
+
+struct ReleaseVersion: Comparable, Sendable {
+    let components: [Int]
+
+    init?(_ tag: String) {
+        let value = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return nil }
+        var numbers: [Int] = []
+        for part in parts {
+            guard !part.isEmpty, part.utf8.allSatisfy({ (48...57).contains($0) }),
+                  part.count == 1 || part.first != "0", let number = Int(part) else { return nil }
+            numbers.append(number)
+        }
+        components = numbers
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.components.lexicographicallyPrecedes(rhs.components) }
+    var description: String { components.map(String.init).joined(separator: ".") }
+}
+
+struct GitHubRelease: Decodable, Sendable {
+    let tag_name: String
+    let draft: Bool
+    let prerelease: Bool
+
+    // Construct links on the known repository instead of trusting a URL from the response.
+    var pageURL: URL { AppInfo.releasesURL.appendingPathComponent("tag").appendingPathComponent(tag_name) }
+    var version: ReleaseVersion? { ReleaseVersion(tag_name) }
+}
+
+enum UpdateError: Error, LocalizedError, Equatable, Sendable {
+    case invalidResponse
+    case invalidVersion
+    case network
+    case timedOut
+    case server(Int)
+    case rateLimited(Date)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse: return "GitHub 返回的数据无法识别，请稍后重试，或打开更新记录查看。"
+        case .invalidVersion: return "最新 Release 的版本号无法识别，请打开更新记录查看。正式版标签应为 v主版本.次版本.修订号。"
+        case .network: return "无法连接 GitHub，请检查网络后重试，也可直接打开更新记录。"
+        case .timedOut: return "连接 GitHub 超时，请稍后重试，也可直接打开更新记录。"
+        case .server(let code): return "GitHub 暂时无法访问（\(code)），请稍后重试，或打开更新记录查看。"
+        case .rateLimited(let until): return "GitHub 请求次数已达上限，请在 \(Format.timestamp(until, full: true)) 后重试，或直接打开更新记录。"
+        }
+    }
+
+    static func from(_ error: Error) -> Self {
+        if let error = error as? Self { return error }
+        if let error = error as? URLError { return error.code == .timedOut ? .timedOut : .network }
+        return .invalidResponse
+    }
+}
+
+struct ReleaseClient: Sendable {
+    let session: URLSession
+
+    init(session: URLSession? = nil) {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 20
+        self.session = session ?? URLSession(configuration: configuration)
+    }
+
+    func latestRelease() async throws -> GitHubRelease? {
+        var request = URLRequest(url: AppInfo.latestReleaseAPI, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("AllinAI-Quota/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw UpdateError.invalidResponse }
+        if response.statusCode == 404 { return nil }
+        if response.statusCode == 429 || (response.statusCode == 403 &&
+            (response.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" || response.value(forHTTPHeaderField: "Retry-After") != nil)) {
+            let now = Date()
+            let delay = response.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+            let reset = response.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(Double.init)
+            let seconds = delay ?? reset.map { $0 - now.timeIntervalSince1970 } ?? 3600
+            throw UpdateError.rateLimited(now.addingTimeInterval(seconds.isFinite ? max(60, min(seconds, 86400)) : 3600))
+        }
+        guard response.statusCode == 200 else { throw UpdateError.server(response.statusCode) }
+        let release: GitHubRelease
+        do { release = try JSONDecoder().decode(GitHubRelease.self, from: data) }
+        catch { throw UpdateError.invalidResponse }
+        guard !release.draft && !release.prerelease else { return nil }
+        guard release.version != nil else { throw UpdateError.invalidVersion }
+        return release
+    }
+}
+
+enum UpdateState: Sendable {
+    case idle, checking, noRelease
+    case available(GitHubRelease), current(GitHubRelease)
+    case failed(UpdateError)
+}
+
+@MainActor
+final class UpdateChecker {
+    private let client: ReleaseClient
+    private let defaults: UserDefaults
+    private let currentVersion: String
+    private var timer: Timer?
+    private(set) var task: Task<Void, Never>?
+    private(set) var state: UpdateState = .idle
+    private(set) var availableRelease: GitHubRelease?
+    var onChange: (() -> Void)?
+    var onManualResult: ((UpdateState) -> Void)?
+
+    init(client: ReleaseClient = ReleaseClient(), defaults: UserDefaults = .standard, currentVersion: String = AppInfo.version) {
+        self.client = client
+        self.defaults = defaults
+        self.currentVersion = currentVersion
+    }
+
+    var automaticChecksEnabled: Bool { defaults.bool(forKey: Preferences.automaticUpdates) }
+    var lastChecked: Date? { defaults.object(forKey: Preferences.lastUpdateCheck) as? Date }
+    var isChecking: Bool { if case .checking = state { return true }; return false }
+
+    func start() {
+        checkAutomaticallyIfNeeded()
+        timer?.invalidate()
+        // The hourly timer only tests whether a daily check is due; it does not poll GitHub hourly.
+        let timer = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkAutomaticallyIfNeeded() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        task?.cancel()
+        task = nil
+        if isChecking { state = .idle }
+    }
+
+    func setAutomaticChecksEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: Preferences.automaticUpdates)
+        onChange?()
+        if enabled { checkAutomaticallyIfNeeded() }
+    }
+
+    func checkAutomaticallyIfNeeded(now: Date = Date()) {
+        guard automaticChecksEnabled else { return }
+        let lastAttempt = defaults.object(forKey: Preferences.lastUpdateAttempt) as? Date ?? .distantPast
+        guard now.timeIntervalSince(lastAttempt) >= 86400 else { return }
+        check(manually: false, now: now)
+    }
+
+    func check(manually: Bool = true, now: Date = Date()) {
+        guard !isChecking else { return }
+        if let retry = defaults.object(forKey: Preferences.updateRetryAfter) as? Date, retry > now {
+            state = .failed(.rateLimited(retry))
+            onChange?()
+            if manually { onManualResult?(state) }
+            return
+        }
+        defaults.set(now, forKey: Preferences.lastUpdateAttempt)
+        state = .checking
+        onChange?()
+        task = Task { [weak self] in
+            guard let self else { return }
+            let result: UpdateState
+            do {
+                let release = try await client.latestRelease()
+                guard !Task.isCancelled else { return }
+                guard let current = ReleaseVersion(currentVersion) else { throw UpdateError.invalidVersion }
+                if let release, let version = release.version {
+                    availableRelease = version > current ? release : nil
+                    result = version > current ? .available(release) : .current(release)
+                } else {
+                    availableRelease = nil
+                    result = .noRelease
+                }
+                defaults.set(now, forKey: Preferences.lastUpdateCheck)
+                defaults.removeObject(forKey: Preferences.updateRetryAfter)
+            } catch {
+                guard !Task.isCancelled else { return }
+                let failure = UpdateError.from(error)
+                if case .rateLimited(let retry) = failure { defaults.set(retry, forKey: Preferences.updateRetryAfter) }
+                result = .failed(failure)
+            }
+            state = result
+            task = nil
+            onChange?()
+            if manually { onManualResult?(result) }
+        }
     }
 }
 
@@ -592,6 +792,10 @@ enum Preferences {
     static let lowBalance = "lowBalanceReminderUSD"
     static let signedOut = "explicitlySignedOut"
     static let notices = "deliveredQuotaNotices"
+    static let automaticUpdates = "automaticUpdateChecksEnabled"
+    static let lastUpdateAttempt = "lastUpdateCheckAttempt"
+    static let lastUpdateCheck = "lastSuccessfulUpdateCheck"
+    static let updateRetryAfter = "updateCheckRetryAfter"
 }
 
 @MainActor
@@ -1269,6 +1473,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private let menu = NSMenu()
     private let store: QuotaStore
     private let reminders = ReminderManager()
+    private let updates = UpdateChecker()
     private let directory: URL
     private var headerItem: NSMenuItem?
     private var menuIsOpen = false
@@ -1302,6 +1507,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         startupEnabled = StartupManager.isEnabled()
         UNUserNotificationCenter.current().delegate = self
         store.onChange = { [weak self] in self?.render() }
+        updates.onChange = { [weak self] in self?.render() }
+        updates.onManualResult = { [weak self] result in self?.showUpdateResult(result) }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
         networkMonitor.pathUpdateHandler = { [weak self] path in
@@ -1315,18 +1522,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         networkMonitor.start(queue: DispatchQueue(label: "local.allinai.quota.network"))
         render()
         Task { await store.start() }
+        updates.start()
     }
     func applicationWillTerminate(_ notification: Notification) {
         networkMonitor.cancel()
         store.suspend()
+        updates.stop()
         visibleTimer?.invalidate()
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner])
     }
-    @objc private func willSleep(_ notification: Notification) { store.suspend() }
-    @objc private func didWake(_ notification: Notification) { store.resume() }
+    @objc private func willSleep(_ notification: Notification) { store.suspend(); updates.stop() }
+    @objc private func didWake(_ notification: Notification) { store.resume(); updates.start() }
 
     private func render() {
         let content = SummaryContent.make(store: store)
@@ -1335,11 +1544,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         statusItem.button?.image = ProgressIcon.make(content.symbol)
         statusItem.button?.title = numbers ? " " + content.barText : ""
         if case .balance = content.symbol, numbers { statusItem.button?.image = nil }
-        statusItem.button?.toolTip = content.tooltip
+        statusItem.button?.toolTip = content.tooltip + (updates.availableRelease.map { "\n发现新版本 v\($0.version!.description)，可在“关于”中查看。" } ?? "")
         statusItem.button?.setAccessibilityLabel(content.tooltip)
         if menuIsOpen {
             headerItem?.view = SummaryView(content: content)
             if let refresh = menu.item(withTag: 11) { refresh.isEnabled = store.canRefresh }
+            updateAboutMenu()
             menu.update()
         } else { rebuildMenu(content: content) }
         reminders.evaluate(store: store)
@@ -1468,7 +1678,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let version = NSMenuItem(title: "版本：v\(AppInfo.version)", action: nil, keyEquivalent: "")
         version.isEnabled = false
         menu.addItem(version)
+        let about = NSMenuItem(title: "关于 AllinAI Quota", action: nil, keyEquivalent: "")
+        about.tag = 12
+        about.submenu = makeAboutMenu()
+        menu.addItem(about)
+        updateAboutMenu()
         menu.addItem(item("退出", #selector(quit), key: "q"))
+    }
+    private func updateAboutMenu() {
+        guard let about = menu.item(withTag: 12) else { return }
+        about.title = updates.availableRelease == nil ? "关于 AllinAI Quota" : "关于 AllinAI Quota · 有新版本"
+        // Keep the submenu object alive while NSMenu is tracking it.
+        if let submenu = about.submenu {
+            submenu.item(withTag: 21)?.title = updates.isChecking ? "正在检查更新…" : "检查更新…"
+            submenu.item(withTag: 21)?.isEnabled = !updates.isChecking
+            let download = submenu.item(withTag: 22)
+            download?.isHidden = updates.availableRelease == nil
+            download?.title = updates.availableRelease.map { "下载 v\($0.version!.description)…" } ?? "下载新版本…"
+            let checked = submenu.item(withTag: 23)
+            checked?.title = updates.lastChecked.map { "上次检查：\(Format.timestamp($0, full: true))" } ?? "尚未检查更新"
+            submenu.item(withTag: 24)?.state = updates.automaticChecksEnabled ? .on : .off
+            submenu.update()
+        }
+    }
+    private func makeAboutMenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        let check = item("检查更新…", #selector(checkForUpdates))
+        check.tag = 21
+        submenu.addItem(check)
+        let download = item("下载新版本…", #selector(openAvailableRelease))
+        download.tag = 22
+        submenu.addItem(download)
+        let automatic = item("自动检查更新（每天）", #selector(toggleAutomaticUpdates))
+        automatic.tag = 24
+        submenu.addItem(automatic)
+        let checked = NSMenuItem(title: "尚未检查更新", action: nil, keyEquivalent: "")
+        checked.tag = 23
+        checked.isEnabled = false
+        submenu.addItem(checked)
+        submenu.addItem(.separator())
+        submenu.addItem(item("更新记录…", #selector(openReleases)))
+        submenu.addItem(item("开源地址（GitHub）…", #selector(openRepository)))
+        return submenu
+    }
+    @objc private func checkForUpdates() { updates.check() }
+    @objc private func toggleAutomaticUpdates() { updates.setAutomaticChecksEnabled(!updates.automaticChecksEnabled) }
+    @objc private func openRepository() { NSWorkspace.shared.open(AppInfo.repositoryURL) }
+    @objc private func openReleases() { NSWorkspace.shared.open(AppInfo.releasesURL) }
+    @objc private func openAvailableRelease() {
+        if let release = updates.availableRelease { NSWorkspace.shared.open(release.pageURL) }
+    }
+    private func showUpdateResult(_ result: UpdateState) {
+        let alert = NSAlert()
+        switch result {
+        case .available(let release):
+            alert.messageText = "发现新版本 v\(release.version!.description)"
+            alert.informativeText = "当前版本：v\(AppInfo.version)。打开 GitHub Release 查看更新说明并下载 AllinAI-Quota.dmg。下载后退出旧版，将应用拖入“应用程序”替换，再重新打开。"
+            alert.addButton(withTitle: "打开下载页面")
+            alert.addButton(withTitle: "稍后")
+        case .current(let release):
+            alert.messageText = "当前无需更新"
+            alert.informativeText = "当前版本：v\(AppInfo.version)\nGitHub 最新正式版：v\(release.version!.description)"
+            alert.addButton(withTitle: "好")
+        case .noRelease:
+            alert.messageText = "暂无正式发布版本"
+            alert.informativeText = "GitHub 上尚未找到可用的正式 Release。可以打开更新记录查看发布情况。"
+            alert.addButton(withTitle: "打开更新记录")
+            alert.addButton(withTitle: "好")
+        case .failed(let error):
+            alert.messageText = "检查更新失败"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "打开更新记录")
+            alert.addButton(withTitle: "好")
+        case .idle, .checking: return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        switch result {
+        case .available(let release): NSWorkspace.shared.open(release.pageURL)
+        case .noRelease, .failed: openReleases()
+        default: break
+        }
     }
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)

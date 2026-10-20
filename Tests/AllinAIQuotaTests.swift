@@ -28,14 +28,17 @@ final class MockHTTP: @unchecked Sendable {
     }
     private let lock = NSLock()
     private var requests: [String: Int] = [:]
+    private var lastRequests: [String: URLRequest] = [:]
     private var handler: (URLRequest, Int) -> Reply
     init(_ handler: @escaping (URLRequest, Int) -> Reply) { self.handler = handler }
     func change(_ handler: @escaping (URLRequest, Int) -> Reply) { lock.lock(); defer { lock.unlock() }; self.handler = handler }
     func count(_ path: String) -> Int { lock.lock(); defer { lock.unlock() }; return requests[path] ?? 0 }
+    func lastRequest(_ path: String) -> URLRequest? { lock.lock(); defer { lock.unlock() }; return lastRequests[path] }
     func reply(_ request: URLRequest) -> Reply {
         let path = request.url!.path.replacingOccurrences(of: "/api/v1/", with: "")
         lock.lock()
         requests[path, default: 0] += 1
+        lastRequests[path] = request
         let count = requests[path]!
         let handler = handler
         lock.unlock()
@@ -74,6 +77,9 @@ enum Fixtures {
     static let refresh = UUID().uuidString
     static let freshAccess = UUID().uuidString
     static let timestamp = ISO8601DateFormatter()
+    static func release(_ tag: String = "v0.3.0", draft: Bool = false, prerelease: Bool = false) -> [String: Any] {
+        ["tag_name": tag, "draft": draft, "prerelease": prerelease, "html_url": "https://example.invalid/untrusted"]
+    }
     static func rawSubscription(status: String = "active", daily: Double? = 3.8, weekly: Double? = 21,
                                 dailyLimit: Double? = 12, weeklyLimit: Double? = 84, expires: TimeInterval = 172800) -> [String: Any] {
         var group: [String: Any] = ["name": "订阅卡（12刀）", "platform": "openai", "description": "用于验证额度、时间与原生界面。"]
@@ -144,6 +150,29 @@ func makeRig(expiredToken: Bool = false, handler: @escaping (URLRequest, Int) ->
     return Rig(client: client, storage: storage, credentials: credentials, http: router, defaults: UserDefaults(suiteName: suite)!, suite: suite)
 }
 
+@MainActor
+struct UpdateRig {
+    let checker: UpdateChecker
+    let client: ReleaseClient
+    let http: MockHTTP
+    let defaults: UserDefaults
+    let suite: String
+    func cleanup() { checker.stop(); defaults.removePersistentDomain(forName: suite) }
+}
+
+@MainActor
+func makeUpdateRig(handler: @escaping (URLRequest, Int) -> Reply = { _, _ in Reply(data: Fixtures.release()) }) -> UpdateRig {
+    let router = MockHTTP(handler)
+    MockHTTP.install(router)
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockProtocol.self]
+    let client = ReleaseClient(session: URLSession(configuration: configuration))
+    let suite = "allinai-update-tests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    return UpdateRig(checker: UpdateChecker(client: client, defaults: defaults, currentVersion: "0.2.0"),
+                     client: client, http: router, defaults: defaults, suite: suite)
+}
+
 @main
 struct TestRunner {
     @MainActor static func main() async {
@@ -153,6 +182,170 @@ struct TestRunner {
             return
         }
         let tests: [(String, @MainActor () async throws -> Void)] = [
+            ("Release versions compare numerically and reject unsupported tags", {
+                try expect(ReleaseVersion("v0.10.0")! > ReleaseVersion("0.9.9")!, "Compare numeric components, not text")
+                try expect(ReleaseVersion("v1.0.0")! > ReleaseVersion("0.99.99")!, "Compare major version first")
+                try expect(ReleaseVersion("v0.2.0") == ReleaseVersion("0.2.0"), "Accept optional v prefix")
+                for tag in ["", "v0.3.0-rc.1", "release-0.3.0", "0.2", "0.2.0.1", "0.-1.0", "0.02.0", "0..0", "999999999999999999999.0.0"] {
+                    try expect(ReleaseVersion(tag) == nil, "Reject ambiguous or non-stable version: \(tag)")
+                }
+            }),
+            ("Update check uses public GitHub API and trusted repository links", {
+                let rig = makeUpdateRig()
+                defer { rig.cleanup() }
+                var manualResults = 0
+                rig.checker.onManualResult = { _ in manualResults += 1 }
+                rig.checker.check()
+                await rig.checker.task?.value
+                guard case .available(let release) = rig.checker.state else { throw TestFailure(description: "Expected available update") }
+                try expect(release.pageURL.absoluteString == "https://github.com/qx0657/allinai-quota-menu/releases/tag/v0.3.0", "Never follow response-supplied URLs")
+                let request = rig.http.lastRequest(AppInfo.latestReleaseAPI.path)
+                try expect(request?.url == AppInfo.latestReleaseAPI, "Use this macOS repository")
+                try expect(request?.value(forHTTPHeaderField: "Authorization") == nil, "No account or GitHub credentials")
+                try expect(request?.httpBody == nil && request?.url?.query == nil, "No account data in update request")
+                try expect(request?.value(forHTTPHeaderField: "User-Agent")?.hasPrefix("AllinAI-Quota/") == true, "Identify application to GitHub")
+                try expect(rig.checker.lastChecked != nil && manualResults == 1, "Save successful check and deliver manual result once")
+            }),
+            ("Same and older GitHub releases never offer a downgrade", {
+                for tag in ["v0.2.0", "v0.1.0"] {
+                    let rig = makeUpdateRig { _, _ in Reply(data: Fixtures.release(tag)) }
+                    defer { rig.cleanup() }
+                    rig.checker.check()
+                    await rig.checker.task?.value
+                    guard case .current = rig.checker.state else { throw TestFailure(description: "Expected current version for \(tag)") }
+                    try expect(rig.checker.availableRelease == nil, "Never offer an older version")
+                }
+            }),
+            ("Missing, draft and prerelease releases remain distinct from up to date", {
+                let replies = [Reply(status: 404), Reply(data: Fixtures.release(draft: true)), Reply(data: Fixtures.release(prerelease: true))]
+                for reply in replies {
+                    let rig = makeUpdateRig { _, _ in reply }
+                    defer { rig.cleanup() }
+                    rig.checker.check()
+                    await rig.checker.task?.value
+                    guard case .noRelease = rig.checker.state else { throw TestFailure(description: "Do not claim latest version without a stable release") }
+                }
+            }),
+            ("Invalid release data and tags produce actionable failures", {
+                for (reply, expected) in [(Reply(data: ["message": "unexpected"]), UpdateError.invalidResponse),
+                                          (Reply(data: Fixtures.release("v0.3.0-rc.1")), .invalidVersion)] {
+                    let rig = makeUpdateRig { _, _ in reply }
+                    defer { rig.cleanup() }
+                    rig.checker.check()
+                    await rig.checker.task?.value
+                    guard case .failed(let error) = rig.checker.state else { throw TestFailure(description: "Expected invalid release failure") }
+                    try expect(error == expected && rig.checker.lastChecked == nil, "Do not record invalid responses as successful checks")
+                }
+            }),
+            ("Update network, timeout and server failures retain their causes", {
+                for (reply, expected) in [(Reply(error: URLError(.notConnectedToInternet)), UpdateError.network),
+                                          (Reply(error: URLError(.timedOut)), .timedOut), (Reply(status: 503), .server(503)),
+                                          (Reply(status: 403), .server(403))] {
+                    let rig = makeUpdateRig { _, _ in reply }
+                    defer { rig.cleanup() }
+                    rig.checker.check()
+                    await rig.checker.task?.value
+                    guard case .failed(let error) = rig.checker.state else { throw TestFailure(description: "Expected update failure") }
+                    try expect(error == expected, "Preserve network vs service vs forbidden causes")
+                }
+            }),
+            ("Concurrent update clicks share one request", {
+                let rig = makeUpdateRig { _, _ in Reply(data: Fixtures.release(), delay: 0.08) }
+                defer { rig.cleanup() }
+                rig.checker.check()
+                rig.checker.check()
+                rig.checker.checkAutomaticallyIfNeeded()
+                try expect(rig.checker.isChecking, "Expose loading state immediately")
+                await rig.checker.task?.value
+                try expect(rig.http.count(AppInfo.latestReleaseAPI.path) == 1, "Only one update request in flight")
+            }),
+            ("Automatic checks are opt-in, daily, quiet and can be disabled", {
+                let rig = makeUpdateRig()
+                defer { rig.cleanup() }
+                var manualResults = 0
+                rig.checker.onManualResult = { _ in manualResults += 1 }
+                rig.checker.checkAutomaticallyIfNeeded()
+                try expect(rig.checker.task == nil && !rig.checker.automaticChecksEnabled, "No GitHub contact by default")
+                let now = Date()
+                rig.checker.setAutomaticChecksEnabled(true)
+                await rig.checker.task?.value
+                rig.checker.checkAutomaticallyIfNeeded(now: now.addingTimeInterval(86399))
+                try expect(rig.checker.task == nil, "No check before 24 hours")
+                rig.checker.checkAutomaticallyIfNeeded(now: now.addingTimeInterval(86401))
+                await rig.checker.task?.value
+                try expect(rig.http.count(AppInfo.latestReleaseAPI.path) == 2 && manualResults == 0, "Daily checks never open manual alerts")
+                rig.checker.setAutomaticChecksEnabled(false)
+                rig.checker.checkAutomaticallyIfNeeded(now: now.addingTimeInterval(3 * 86400))
+                try expect(rig.checker.task == nil, "Disabling stops future automatic requests")
+            }),
+            ("Restart preserves daily schedule while manual check bypasses it", {
+                let rig = makeUpdateRig()
+                defer { rig.cleanup() }
+                rig.checker.setAutomaticChecksEnabled(true)
+                await rig.checker.task?.value
+                let restarted = UpdateChecker(client: rig.client, defaults: rig.defaults)
+                defer { restarted.stop() }
+                restarted.checkAutomaticallyIfNeeded()
+                try expect(restarted.task == nil && restarted.lastChecked != nil, "Restart cannot reset the daily schedule")
+                restarted.check()
+                await restarted.task?.value
+                try expect(rig.http.count(AppInfo.latestReleaseAPI.path) == 2, "Manual check remains available during daily interval")
+            }),
+            ("GitHub rate-limit cooldown survives restarts and blocks repeated requests", {
+                let rig = makeUpdateRig { _, count in
+                    count == 1 ? Reply(status: 429, headers: ["Retry-After": "120"]) : Reply(data: Fixtures.release())
+                }
+                defer { rig.cleanup() }
+                rig.checker.check()
+                await rig.checker.task?.value
+                guard case .failed(.rateLimited(let retry)) = rig.checker.state else { throw TestFailure(description: "Expected rate limit") }
+                try expect(retry.timeIntervalSinceNow > 100, "Honor Retry-After")
+                rig.checker.check()
+                let restarted = UpdateChecker(client: rig.client, defaults: rig.defaults)
+                defer { restarted.stop() }
+                restarted.check()
+                try expect(rig.http.count(AppInfo.latestReleaseAPI.path) == 1, "Respect cooldown across clicks and restarts")
+                restarted.check(now: retry.addingTimeInterval(1))
+                await restarted.task?.value
+                try expect(rig.http.count(AppInfo.latestReleaseAPI.path) == 2, "Allow retry after cooldown expires")
+            }),
+            ("GitHub primary rate limit honors reset timestamp", {
+                let reset = Date().addingTimeInterval(600).timeIntervalSince1970
+                let rig = makeUpdateRig { _, _ in
+                    Reply(status: 403, headers: ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": String(Int(reset))])
+                }
+                defer { rig.cleanup() }
+                rig.checker.check()
+                await rig.checker.task?.value
+                guard case .failed(.rateLimited(let retry)) = rig.checker.state else { throw TestFailure(description: "Expected primary rate limit") }
+                try expect(abs(retry.timeIntervalSince1970 - floor(reset)) < 1, "Use GitHub rate-limit reset time")
+            }),
+            ("Failed automatic rechecks retain known updates without opening alerts", {
+                let rig = makeUpdateRig()
+                defer { rig.cleanup() }
+                var manualResults = 0
+                rig.checker.onManualResult = { _ in manualResults += 1 }
+                rig.checker.check(manually: false)
+                await rig.checker.task?.value
+                let checked = rig.checker.lastChecked
+                rig.http.change { _, _ in Reply(error: URLError(.notConnectedToInternet)) }
+                rig.checker.check(manually: false)
+                await rig.checker.task?.value
+                try expect(rig.checker.availableRelease?.tag_name == "v0.3.0", "Keep known release after network failure")
+                try expect(rig.checker.lastChecked == checked && manualResults == 0, "Failure cannot advance success time or open alerts")
+            }),
+            ("Stopping update checks discards late responses", {
+                let rig = makeUpdateRig { _, _ in Reply(data: Fixtures.release(), delay: 0.2) }
+                defer { rig.cleanup() }
+                var manualResults = 0
+                rig.checker.onManualResult = { _ in manualResults += 1 }
+                rig.checker.check()
+                let pending = rig.checker.task
+                try await waitUntil { rig.http.count(AppInfo.latestReleaseAPI.path) == 1 }
+                rig.checker.stop()
+                await pending?.value
+                try expect(!rig.checker.isChecking && rig.checker.availableRelease == nil && manualResults == 0, "Canceled checks cannot restore state or show alerts")
+            }),
             ("Balance mode ignores expired subscription history", {
                 var snapshot = AccountSnapshot()
                 snapshot.apply(AccountResult(subscriptions: .success([try Fixtures.sub(Fixtures.rawSubscription(status: "expired", expires: -3600))]),

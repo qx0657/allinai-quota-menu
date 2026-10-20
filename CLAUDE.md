@@ -3,170 +3,88 @@
 Guidance for Claude Code in this repository. The marked region below is mirrored with `AGENTS.md`; edit either file and the other must be kept in sync.
 
 <!-- agent-docs-sync:start -->
+
 ## Scope
 
-This repository contains a small native macOS menu bar app written as a single Swift source file plus shell scripts for icon generation, installation, and DMG packaging.
+A small native macOS menu bar app: one Swift file plus shell scripts. Keep changes focused; do not add a package manager or large dependency stack without a clear reason.
 
-The source is intentionally lightweight:
-
-```text
-Sources/AllinAIQuotaMenu.swift
-```
-
-Keep changes focused and conservative unless the user asks for a larger refactor. Avoid introducing a package manager or large dependency stack without a clear reason.
-
-## Important Paths
-
-- Source: `Sources/AllinAIQuotaMenu.swift`
-- Install script: `build.sh`
-- DMG packaging script: `package_dmg.sh`
-- Icon script: `make_icon.sh`
-- DMG output: `dist/AllinAI-Quota.dmg`
-- Installed app: `/Applications/AllinAI Quota.app`
-- App data: `~/Library/Application Support/AllinAIQuotaMenu/`
-- Keychain service: `local.allinai.quota.menu`
-- Startup LaunchAgent: `~/Library/LaunchAgents/local.allinai.quota.menu.plist`
-- Windows counterpart: `https://github.com/qx0657/allinai-quota-tray-windows`
+The Windows app stays in its own repository. Before changing quota rules, authentication, scheduling, reminders or updates, read `docs/NATIVE_PARITY.md` and check whether its native counterpart needs the same change. Do not introduce a cross-platform runtime to synchronize the repositories.
 
 ## Code Map
 
-- `Config`, `TokenCache`, API models: persisted config, token cache, and service response types.
-- `AllinClient`: config files, token cache, auth/login/refresh, subscription API, profile API.
-- `Keychain`: macOS Keychain wrapper for stored passwords.
-- `StartupManager`: per-user LaunchAgent toggle for login startup.
-- `AppDelegate`: `NSStatusItem` owner for the menu, refresh timer, account actions, version display, and app shutdown.
-- `ReleaseVersion`, `ReleaseClient`, `UpdateChecker`: GitHub stable-release comparison and independent update requests; optional daily checks default off.
-- `ProgressIcon`: dynamic menu bar icon renderer.
-- Formatting helpers: quota metric selection, status text, dates, remaining time, and money formatting.
+All production Swift types are in `Sources/AllinAIQuotaMenu.swift`:
 
-## Service/API Rules
+- Models, `QuotaPolicy`, `Format`: API types, consumption mode, most constrained known cycle and formatting.
+- `LocalStorage`, `Keychain`: config/token files, migration and credential storage.
+- `AllinClient` actor: login, shared token renewal, API calls and error classification.
+- `QuotaStore` (MainActor): independent resource snapshots, refresh scheduling, cooldown/backoff, cancellation and session epochs.
+- `ReminderManager`: thresholds, quiet initial observation, deduplication and native notifications.
+- `ReleaseVersion`, `ReleaseClient`, `UpdateChecker`: independent GitHub stable-release checks, daily scheduling and persisted cooldown.
+- `SummaryContent`, `SummaryView`, `QuotaProgressView`, `ProgressIcon`: presentation and read-only native views; no disk or Keychain access while rendering.
+- `AppDelegate`, `LoginPanelController`, `StartupManager`: status item/menu, asynchronous login and per-user LaunchAgent.
+- `AppInfo.intervals`: supported refresh intervals. `ProgressIcon.make(_:)` renders `StatusSymbol` values.
 
-Preserve these URLs unless the backend has really changed:
+Other entry points: `Tests/AllinAIQuotaTests.swift`, `Tests/run_tests.sh`, `build.sh`, `make_icon.sh`, `package_dmg.sh`. Product intent is in `PRODUCT.md`, native UI rules in `DESIGN.md`, and publishing in `docs/RELEASING.md`.
 
-```text
-https://allincode.top/api/v1
-https://allincode.top/subscriptions
-```
+## Behavior
 
-Used endpoints:
+- Stay menu-bar-only; preserve `LSUIElement`. Login and long-description panels are temporary.
+- Keep Chinese labels, `开机自启动`, and `版本：v<version>` near the menu bottom.
+- Ring, progress bar and percentage mean remaining quota. Select the most constrained known cycle; missing data is not zero or unlimited.
+- Expired subscriptions cannot obscure balance mode. Do not infer automatic balance billing when a valid subscription is exhausted.
+- Preserve independent subscription/profile snapshots and last successful times on failure.
+- Only authentication errors trigger session recovery. Share token renewal; late responses cannot restore a logged-out session.
+- All refresh paths honor service cooldown. Pause during sleep and merge wake/network recovery.
+- Reminders and daily automatic update checks default off. Keep initial reminders quiet and deduplicated.
+- Preserve template icons, readable light/dark states and the optional menu bar number preference.
 
-```text
-POST /auth/login
-POST /auth/refresh
-GET  /subscriptions?timezone=<local-timezone>
-GET  /user/profile
-```
+## Service and Storage
 
-The app expects API responses wrapped in:
+Preserve `https://allincode.top/api/v1` and `https://allincode.top/subscriptions`; these real service URLs are intentional exceptions to AllinAI branding.
 
-```text
-{ code, message, data }
-```
+Endpoints: POST `/auth/login`, POST `/auth/refresh`, GET `/subscriptions?timezone=<local-timezone>`, GET `/user/profile`, wrapped in `{ code, message, data }`.
 
-## Security And Storage
+- App data: `~/Library/Application Support/AllinAIQuotaMenu/`.
+- `config.json`: email and refresh interval only. Other preferences use UserDefaults.
+- Passwords: macOS Keychain service `local.allinai.quota.menu`. Never store passwords in source, JSON config, logs, README examples or fixtures.
+- `tokens.json` contains sensitive local runtime data; never commit or log it.
+- Preserve file permissions, atomic writes and legacy credential migration. Test with isolated temporary storage and generated fake credentials, not real account data.
+- Startup: `~/Library/LaunchAgents/local.allinai.quota.menu.plist`, per-user with no administrator requirement.
+- Update requests use this repository's latest published GitHub Release without AllinAI credentials. Stable tags are `v<major>.<minor>.<patch>`; keep opt-in daily scheduling and persisted GitHub cooldown.
 
-- Do not store passwords in source, `config.json`, `tokens.json`, logs, README examples, or test fixtures.
-- Passwords belong in macOS Keychain through `Keychain`.
-- `tokens.json` may contain access/refresh tokens and must remain local runtime data only.
-- `config.json` stores email and refresh interval only.
-- Startup is per-user through LaunchAgent and should not require administrator privileges.
+## Build and Validation
 
-## UI/UX Rules
+Run after source or script changes on macOS:
 
-- Keep the app menu-bar-only. Do not introduce a Dock/main-window workflow unless explicitly requested.
-- Preserve `LSUIElement` in generated `Info.plist`.
-- Keep Chinese user-facing menu labels consistent with the current app.
-- Keep refresh intervals reasonable; avoid aggressive polling.
-- The startup toggle should remain a simple menu check item named `开机自启动`.
-- The menu should show the app version near the bottom as `版本：v<version>`.
-
-## Versioning
-
-Current version: `0.2.0`
-
-Release version metadata is generated by both `build.sh` and `package_dmg.sh`:
-
-```bash
-APP_VERSION="0.2.0"
-APP_BUILD="2"
-```
-
-When bumping versions, update both scripts together. `Sources/AllinAIQuotaMenu.swift` reads `CFBundleShortVersionString` through `Bundle.main`; the hardcoded fallback should also match the current version.
-
-Update checks use this repository's latest published GitHub Release. Publish stable tags as `v<major>.<minor>.<patch>` with `AllinAI-Quota.dmg` attached. Keep update requests independent of AllinAI credentials.
-
-## Build And Validation
-
-Run these checks after changing source or scripts on macOS:
-
-```bash
+```sh
 swiftc -typecheck Sources/AllinAIQuotaMenu.swift
+swiftc -swift-version 6 -typecheck Sources/AllinAIQuotaMenu.swift
 zsh -n build.sh
 zsh -n make_icon.sh
 zsh -n package_dmg.sh
+zsh -n Tests/run_tests.sh
+./Tests/run_tests.sh
 ```
 
-For install verification:
+Build an isolated app with `./build.sh --output "$PWD/.build/AllinAI Quota.app"`. `./build.sh` without arguments replaces `/Applications/AllinAI Quota.app`; use it for an intended installation, after exiting the old app. Preserve failure-safe bundle replacement.
 
-```bash
-./build.sh
-open "/Applications/AllinAI Quota.app"
-```
+For release packaging:
 
-For DMG verification:
-
-```bash
+```sh
 ./package_dmg.sh
+hdiutil verify dist/AllinAI-Quota.dmg
 hdiutil imageinfo dist/AllinAI-Quota.dmg
 ```
 
-Verify version metadata:
+Packaging builds an isolated app and must not overwrite the installed app. The scripts share icon staging paths; execute them sequentially. Check bundle version, build number, `LSUIElement`, minimum OS and Mach-O architecture. Current deployment target is macOS 12.0 in both compiler target and generated plist; builds use the host architecture. The official 0.2.0 DMG is Apple Silicon, not universal. Intel and minimum-OS runtime behavior remain unverified.
 
-```bash
-plutil -p "/Applications/AllinAI Quota.app/Contents/Info.plist" | grep CFBundle
-```
+Previews use simulated data and do not prove real menu, notification or VoiceOver behavior. Windows cannot fully validate Swift/AppKit or macOS packaging.
 
-Windows note: this repository may be edited from Windows, but Swift/AppKit compilation and macOS packaging cannot be fully validated there.
+## Version and Publishing
 
-## Common Tasks
+Current version: 0.2.0, build 2. Keep `APP_VERSION` / `APP_BUILD` in `build.sh` and `package_dmg.sh` synchronized, plus the `AppInfo.version` fallback, README and CHANGELOG. Normal UI version comes from `CFBundleShortVersionString`.
 
-### Change Refresh Intervals
+Follow `docs/RELEASING.md`: publish a stable tag for the built commit with `AllinAI-Quota.dmg` and `SHA256SUMS.txt`, verify assets before publishing, then confirm the latest-release API. Source push alone is not a release. Publish when requested; current builds have no Developer ID signing or notarization.
 
-Update the interval list in `AppDelegate.rebuildMenu()`. Keep values reasonable.
-
-### Change Startup Behavior
-
-Update `StartupManager`. Keep startup under `~/Library/LaunchAgents` unless the user explicitly asks for another mechanism.
-
-### Change Icon Appearance
-
-Update `ProgressIcon.make(progress:color:)`. Verify menu-bar visibility in light and dark macOS appearances.
-
-### Add Packaging
-
-Prefer extending `package_dmg.sh`. Keep generated DMGs under `dist/`.
-
-## Git/Generated Files
-
-Ignored generated paths include:
-
-```text
-.build/
-Assets/*.iconset/
-dist/*.dmg
-dist/dmg-stage/
-```
-
-Do not commit runtime data from `~/Library/Application Support/AllinAIQuotaMenu`.
-
-## Naming
-
-Use `AllinAI` for app-visible names, local app identifiers, icon resources, and documentation.
-
-Known intentional exceptions:
-
-- `https://allincode.top/api/v1`
-- `https://allincode.top/subscriptions`
-
-Those are real service URLs and should not be renamed as part of branding cleanup.
+Keep `.build/`, `Assets/*.iconset/`, DMGs, staging directories and checksum output ignored. Never commit runtime account data. Keep the marked guidance in AGENTS.md and CLAUDE.md mirrored; edit one source and synchronize the other.
 <!-- agent-docs-sync:end -->

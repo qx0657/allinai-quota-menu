@@ -6,7 +6,9 @@
 
 适合个人单账号使用。基于 Swift 与 AppKit，保持单文件源码，不依赖第三方运行库或包管理器。
 
-Windows 版本：[qx0657/allinai-quota-tray-windows](https://github.com/qx0657/allinai-quota-tray-windows)。
+Windows 版本：[qx0657/allinai-quota-tray-windows](https://github.com/qx0657/allinai-quota-tray-windows)。两端继续独立仓库、原生实现，以相同业务规则维护；对应关系与同步检查见[原生版本同步维护](docs/NATIVE_PARITY.md)。
+
+下载：[macOS v0.2.0](https://github.com/qx0657/allinai-quota-menu/releases/tag/v0.2.0)（Apple Silicon DMG，部署目标 macOS 12+）。版本变化见[更新记录](CHANGELOG.md)。
 
 ## 功能概览
 
@@ -58,7 +60,7 @@ open "$PWD/.build/AllinAI Quota.app"
 
 `--output` 必须是以 `.app` 结尾的绝对路径。应用按 bundle identifier 防止重复运行，测试独立副本前也应退出已有实例。
 
-当前已在 Apple Silicon、Swift 6.0.3 环境完成构建与测试。脚本默认按本机架构编译，不生成通用二进制；最低 macOS 版本和 Intel Mac 尚未单独验收。当前构建脚本不执行 Developer ID 签名或公证。
+当前已在 Apple Silicon、macOS 26.6.2、Swift 6.0.3 环境完成构建与测试。脚本按本机架构编译，显式设置 macOS 12.0 部署目标和 bundle 最低系统版本，不生成通用二进制。最低系统版本与 Intel Mac 尚未实机验收；官方 DMG 为 Apple Silicon 版本。当前构建脚本不执行 Developer ID 签名或公证。
 
 ### 使用已有 DMG
 
@@ -192,10 +194,13 @@ open "$PWD/.build/AllinAI Quota.app"
 ├── docs/
 │   ├── design/                       # 优化方案与设计样例
 │   ├── verification/                 # 验证记录与模拟数据预览
+│   ├── NATIVE_PARITY.md              # 两个原生仓库的业务对应与同步约定
+│   ├── RELEASING.md                  # 构建、标签、校验与 GitHub 发布步骤
 │   └── images/                       # 旧版历史截图
+├── CHANGELOG.md                      # 按版本记录变化
 ├── PRODUCT.md                        # 产品目标与使用约束
 ├── DESIGN.md                         # 已实现的设计规范
-├── AGENTS.md                         # 仓库协作规则
+├── AGENTS.md / CLAUDE.md             # 镜像的仓库协作规则
 ├── research/                         # 历史网页／接口参考材料
 └── dist/                             # 本地打包输出
 ```
@@ -235,7 +240,7 @@ zsh -n Tests/run_tests.sh
 ./Tests/run_tests.sh --render-previews "$PWD/.build/previews"
 ```
 
-预览使用模拟数据，不能代替真实菜单、通知或 VoiceOver 验证。2026-10-20 的本轮验证已通过 25 项测试、构建与镜像检查，核心菜单功能获得用户实机确认；完整证据与覆盖边界见[验证记录](docs/verification/2026-10-20.md)。
+预览使用模拟数据，不能代替真实菜单、通知或 VoiceOver 验证。v0.2.0 已通过 38 项回归测试，包含新增的更新检查用例，详见[发布验证记录](docs/verification/release-0.2.0.md)。早期界面优化的 25 项测试与用户实机确认保留在[原始验证记录](docs/verification/2026-10-20.md)，不代表新增更新功能已完成人工验收。
 
 ## 打包与版本管理
 
@@ -276,6 +281,8 @@ APP_BUILD="2"
 
 无需另建更新服务器或在客户端配置 GitHub 令牌。新版本只有发布到 GitHub Release 后，其他用户才会检查到。
 
+维护者完整操作、架构检查、SHA-256 校验与草稿发布流程见[发布指南](docs/RELEASING.md)。
+
 安装后可核对元数据：
 
 ```sh
@@ -284,7 +291,7 @@ plutil -extract CFBundleVersion raw "/Applications/AllinAI Quota.app/Contents/In
 plutil -extract LSUIElement raw "/Applications/AllinAI Quota.app/Contents/Info.plist"
 ```
 
-`.build/`、`Assets/*.iconset/`、`dist/*.dmg`、`dist/dmg-stage/` 为忽略的生成路径。本地账号配置、令牌与钥匙串数据不得提交。
+`.build/`、`Assets/*.iconset/`、`dist/*.dmg`、`dist/dmg-stage/` 与 `dist/SHA256SUMS.txt` 为忽略的生成路径。本地账号配置、令牌与钥匙串数据不得提交。
 
 ## 服务接口
 
@@ -330,6 +337,10 @@ LaunchAgent 记录可执行文件路径。在新位置启动应用后，重新�
 
 ## 相关文档
 
+- [版本更新记录](CHANGELOG.md)
+- [发布指南](docs/RELEASING.md)
+- [两个原生仓库的同步约定](docs/NATIVE_PARITY.md)
+- [v0.2.0 发布验证](docs/verification/release-0.2.0.md)
 - [产品目标与约束](PRODUCT.md)
 - [优化设计方案](docs/design/optimization-proposal-2026-10-20.md)
 - [已实现的设计规范](DESIGN.md)

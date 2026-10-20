@@ -4,6 +4,8 @@ set -euo pipefail
 APP_NAME="AllinAI Quota"
 APP_VERSION="0.2.0"
 APP_BUILD="2"
+APP_MIN_MACOS="12.0"
+APP_ARCH="$(uname -m)"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP="/Applications/${APP_NAME}.app"
 
@@ -49,12 +51,13 @@ cat > "${BUNDLE}/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
   <key>CFBundleVersion</key><string>${APP_BUILD}</string>
+  <key>LSMinimumSystemVersion</key><string>${APP_MIN_MACOS}</string>
   <key>LSUIElement</key><true/>
 </dict>
 </plist>
 PLIST
 
-swiftc -O "${ROOT}/Sources/AllinAIQuotaMenu.swift" -framework Security -o "${BIN}"
+swiftc -O -target "${APP_ARCH}-apple-macosx${APP_MIN_MACOS}" "${ROOT}/Sources/AllinAIQuotaMenu.swift" -framework Security -o "${BIN}"
 chmod +x "${BIN}"
 plutil -lint "${BUNDLE}/Contents/Info.plist" >/dev/null
 

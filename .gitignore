@@ -3,4 +3,5 @@
 Assets/*.iconset/
 dist/*.dmg
 dist/dmg-stage/
+dist/SHA256SUMS.txt
 *.log

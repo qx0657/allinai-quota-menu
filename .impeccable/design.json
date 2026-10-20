@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-20T04:18:58Z",
+  "title": "Design System: AllinAI Quota Menu",
+  "extensions": {
+    "typographyMeta": {
+      "brand": {
+        "displayName": "品牌",
+        "purpose": "原生系统字体，NSFont.Weight.semibold。"
+      },
+      "title": {
+        "displayName": "订阅与消费模式",
+        "purpose": "原生系统字体，NSFont.Weight.medium。"
+      },
+      "amount": {
+        "displayName": "主金额与状态",
+        "purpose": "原生系统字体，NSFont.Weight.semibold。"
+      },
+      "amount-long": {
+        "displayName": "较长主文本",
+        "purpose": "主文本超过 12 个字符时使用，NSFont.Weight.semibold。"
+      },
+      "percentage": {
+        "displayName": "剩余百分比",
+        "purpose": "原生等宽数字系统字体，NSFont.Weight.medium，右对齐。"
+      },
+      "detail": {
+        "displayName": "解释与时效",
+        "purpose": "原生系统字体，NSFont.Weight.regular，可换行。"
+      },
+      "label": {
+        "displayName": "账号与辅助标签",
+        "purpose": "原生系统字体，NSFont.Weight.regular。"
+      },
+      "body": {
+        "displayName": "登录表单说明",
+        "purpose": "原生系统字体，NSFont.Weight.regular。"
+      },
+      "status-number": {
+        "displayName": "可选菜单栏数值",
+        "purpose": "原生等宽数字系统字体，NSFont.Weight.medium。"
+      }
+    }
+  },
+  "components": [
+    {
+      "name": "只读账户概览",
+      "kind": "custom",
+      "refersTo": "account-summary",
+      "description": "原生 AppKit SummaryView，承载订阅、余额、时效与异常状态；原生预览来自 .build/previews，组件预览字段留空。",
+      "html": "",
+      "css": ""
+    },
+    {
+      "name": "剩余额度条",
+      "kind": "custom",
+      "refersTo": "quota-progress",
+      "description": "原生 AppKit QuotaProgressView，绘制剩余比例并提供 progressIndicator 角色；组件预览字段留空。",
+      "html": "",
+      "css": ""
+    },
+    {
+      "name": "菜单栏状态图标",
+      "kind": "custom",
+      "refersTo": "status-icon",
+      "description": "原生 NSImage 模板图标与 NSStatusItem，按订阅、余额、未知与账号状态切换；组件预览字段留空。",
+      "html": "",
+      "css": ""
+    }
+  ],
+  "narrative": {
+    "northStar": "数据可信度优先于装饰",
+    "overview": "保留轻量、安静的原生 macOS 菜单栏界面。核心金额最先可见，消费模式与数据时效紧随其后；系统菜单承担操作，自定义只读信息区承担阅读。订阅额度与账户余额分别表达，风险通过文字与符号说明。\n\n本记录提取自现行 `Sources/AllinAIQuotaMenu.swift` 的 `SummaryView`、`QuotaProgressView`、`ProgressIcon`、`AppearanceStyle` 与原生菜单实现，沿用已批准的优化方案。尺寸使用 AppKit 逻辑点（pt）；系统字体与语义颜色保留原生 API 含义。sidecar 的组件为原生 AppKit 记录，组件预览字段留空。\n\n证据范围：已查看 `.build/previews/` 中订阅、余额、额度耗尽、离线、未知与未登录六组亮暗 AppKit 状态样例；样例使用模拟数据。25 项模拟测试与 Swift 6 typecheck 已通过，独立 reviewer 对四项界面修复给出 ship。用户提供的实际深色余额菜单、账号工具子菜单及数值模式截图已核对，未见文字溢出或布局错位；用户完成本轮核心菜单检查后确认功能无问题。VoiceOver、其他系统外观设置、通知送达及菜单快捷键未逐项实测，这些记录不代表完整实机交互或可访问性认证。",
+    "keyCharacteristics": [
+      "原生 NSMenu 操作与自定义只读概览并用。",
+      "核心金额优先，账号、周期、时效与解释分层呈现。",
+      "文字、符号与可访问名称共同说明状态，颜色仅作辅助。"
+    ],
+    "rules": [
+      {
+        "name": "The Native Color Rule",
+        "body": "系统语义色由 AppKit 随外观与系统设置解析；不要把预览采样色固化为主题色。",
+        "section": "colors"
+      },
+      {
+        "name": "The Readable Data Rule",
+        "body": "只读概览继续使用正常文字层级；核心金额不能借用禁用态来表达不可编辑。",
+        "section": "typography"
+      }
+    ],
+    "dos": [
+      "Do 保留系统语义文字色、系统菜单材质与原生控件行为。",
+      "Do 让概览高度随内容计算，长说明换行，截断标题仍提供可读取的完整名称。",
+      "Do 统一用“剩余”描述圆环、百分比和额度条，余额单独显示金额。",
+      "Do 保留最近成功数据，并明确离线、部分失败与成功更新时间。",
+      "Do 在修改后核对亮暗状态样例，并单独验证真实菜单交互与辅助功能。"
+    ],
+    "donts": [
+      "Don't 把核心金额或状态做成 disabled 菜单项。",
+      "Don't 固化系统动态颜色，或为菜单额外增加自定义阴影、玻璃层与装饰背景。",
+      "Don't 为余额绘制没有真实分母的进度，也不把未知数据表示成零。",
+      "Don't 把亮暗静态预览、模拟测试或 typecheck 当作真实菜单与 VoiceOver 已验收。"
+    ]
+  }
+}

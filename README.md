@@ -10,6 +10,8 @@ Windows 版本：[qx0657/allinai-quota-tray-windows](https://github.com/qx0657/a
 
 下载：[macOS v0.2.0](https://github.com/qx0657/allinai-quota-menu/releases/tag/v0.2.0)（Apple Silicon DMG，部署目标 macOS 12+）。版本变化见[更新记录](CHANGELOG.md)。
 
+公司 GitLab 上的 `huguangbang/allinai-quota-menu` 是本仓库的内部镜像，`main` 与版本标签保持同一历史，只供内网查阅。正式 DMG 和客户端检查更新仍只走 GitHub Release。不要把更新地址改到镜像，也不要和 Windows 仓库合并。
+
 ## 功能概览
 
 - **订阅与余额自适应**：有有效订阅时展示剩余额度；无有效订阅且余额充足时进入余额消费模式。

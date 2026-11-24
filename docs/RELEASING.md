@@ -64,3 +64,14 @@ gh api repos/qx0657/allinai-quota-menu/releases/latest
 ```
 
 确认返回 `tag_name=v0.2.0`、非草稿、非预发布，并有 `AllinAI-Quota.dmg` 与 `SHA256SUMS.txt`。单独推送代码或 tag 不会让用户检查到新版。保留固定 DMG 名称，以便用户按客户端说明下载；Release 标题和标签区分版本。
+
+## 公司 GitLab 镜像
+
+`origin` 保持 GitHub。公司 GitLab 项目 `huguangbang/allinai-quota-menu` 使用 remote 名 `gitlab`，只镜像 `main` 和版本标签，不上传 DMG，也不作为客户端更新源。GitHub Release 发布完成后追加：
+
+```sh
+git push gitlab main
+git push gitlab v0.2.0
+```
+
+不要 force push，不要移动已发布标签。Windows 仓单独推自己的 `gitlab` remote。
